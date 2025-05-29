@@ -1,11 +1,12 @@
 # main.py ────────────────────────────────────────────────────────────────────
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Literal, Optional, Dict, Any
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from llama_cpp import Llama
-import json, uuid
+import json, uuid, re
 
 # ── 0. FastAPI & model ──────────────────────────────────────────────────────
 app = FastAPI(title="Llama-2 Function-Calling API", version="2.0.0")
@@ -22,7 +23,7 @@ def get_current_time() -> str:
 
 
 def get_weather(location: str) -> str:
-    return f"(dummy) Weather in {location}: 25 °C, partly cloudy."
+    return f" Weather in {location}: -25 °C, partly cloudy and extremely cold."
 
 FUNCTIONS = {
     "get_current_time": {"fn": get_current_time, "params": {}},
@@ -40,10 +41,15 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = 256
     temperature: Optional[float] = 0.2
 
+class FunctionCall(BaseModel):
+    function: str
+    arguments: Dict[str, Any]
+
 class Choice(BaseModel):
     message: Message
     index: int
     finish_reason: Literal["stop"]
+    function_call: Optional[FunctionCall] = None
 
 class ChatCompletionResponse(BaseModel):
     id: str
@@ -52,6 +58,8 @@ class ChatCompletionResponse(BaseModel):
     usage: Dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 # ── 3. Utilities ────────────────────────────────────────────────────────────
+
+
 def build_system_message() -> str:
     """Create clear instructions for function calling behavior."""
     # Build function list with parameters
@@ -158,10 +166,17 @@ async def chat(req: ChatCompletionRequest):
         temperature=req.temperature,
         stop=["###"]
     )["choices"][0]["text"].strip()
-
+    function_call = None
     # Check if it's a valid function call
+    
     if is_valid_function_call(response):
         try:
+            function_call = json.loads(response)
+            print("")
+            print("----------------MODEL CALLED FUNCTION----------------")
+            print(response)
+            print("-----------------------------------------------------")
+            print("")
             # Execute function and get result
             result = execute_function_call(response)
             
@@ -186,6 +201,7 @@ async def chat(req: ChatCompletionRequest):
         choices=[Choice(
             message=Message(role="assistant", content=response),
             index=0,
-            finish_reason="stop"
+            finish_reason="stop",
+            function_call=function_call
         )]
     )
