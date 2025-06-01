@@ -1,12 +1,14 @@
 # main.py ────────────────────────────────────────────────────────────────────
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from typing import List, Literal, Optional, Dict, Any
-from datetime import datetime
-from zoneinfo import ZoneInfo
 from llama_cpp import Llama
-import json, uuid, re
+import json, uuid
+
+
+from models import * #Import all models from models.py
+from functions import * #Import all functions available to model from functions.py
+from utilities import * #Import all utilities from utilities.py
+from embedder import * #Import all utilities from embedder.py
 
 # ── 0. FastAPI & model ──────────────────────────────────────────────────────
 app = FastAPI(title="Llama-2 Function-Calling API", version="2.0.0")
@@ -16,150 +18,10 @@ llm = Llama.from_pretrained(
     filename="llama-2-7b-chat.Q4_K_M.gguf",
 )
 
-# ── 1. Server-side Python tools ─────────────────────────────────────────────
-def get_current_time() -> str:
-    """Get current time in US Eastern Time."""
-    return datetime.now(ZoneInfo("America/New_York")).isoformat()
+# ── API Endpoints ──────────────────────────────────────────────────────
 
 
-def get_weather(location: str) -> str:
-    return f"Weather in {location}: 25 °C, partly cloudy and extremely cold."
-
-FUNCTIONS = {
-    "get_current_time": {"fn": get_current_time, "params": {}},
-    "get_weather": {"fn": get_weather, "params": {"location": str}},
-}
-
-# ── 2. Pydantic I/O models (unchanged except roles) ─────────────────────────
-class Message(BaseModel):
-    role: Literal["system", "user", "assistant", "function"]
-    content: str
-
-class ChatCompletionRequest(BaseModel):
-    model: str
-    messages: List[Message]
-    max_tokens: Optional[int] = 256
-    temperature: Optional[float] = 0.2
-    stream: Optional[bool] = False
-
-class FunctionCall(BaseModel):
-    name: str
-    arguments: Dict[str, Any]
-
-class Delta(BaseModel):
-    role: Optional[str] = None
-    content: Optional[str] = None
-    function_call: Optional[FunctionCall] = None
-
-class Choice(BaseModel):
-    message: Optional[Message] = None
-    delta: Optional[Delta] = None
-    index: int = 0
-    finish_reason: Optional[Literal["stop", "length", "function_call"]] = None
-
-class ChatCompletionResponse(BaseModel):
-    id: str
-    object: Literal["chat.completion", "chat.completion.chunk"] = "chat.completion"
-    choices: List[Choice]
-    usage: Dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-
-# ── 3. Utilities ────────────────────────────────────────────────────────────
-
-
-
-def build_system_message() -> str:
-    """Create clear instructions for function calling behavior."""
-    # Build function list with parameters
-    function_list = []
-    # Build examples for each function
-    examples = []
-    
-    for name, info in FUNCTIONS.items():
-        # Function list entry
-        params = ", ".join(f"{param}" for param in info["params"].keys())
-        params = f"({params})" if params else "(no parameters)"
-        function_list.append(f"- {name}{params}")
-        
-        # Example entry
-        example_args = {}
-        for param in info["params"].keys():
-            example_args[param] = "London" if "location" in param else "default"
-        
-        examples.append(f"Q: What is the {name.replace('get_', '')} in {next(iter(example_args.values())) if example_args else 'now'}?\nA: " + 
-                      json.dumps({"function": name, "arguments": example_args}))
-
-    return f"""You are an AI assistant with access to real-time information through functions.
-
-STRICT RULES:
-
-1. ALWAYS call a function when asked about:
-   - Current time → use get_current_time
-   - Weather → use get_weather
-   NO EXCEPTIONS. If the question matches, make the function call.
-
-2. Function Call Format:
-   {{"function": "name", "arguments": {{...}}}}
-   Output ONLY this JSON, nothing else.
-
-3. Never try to answer time/weather questions yourself.
-   Let the functions provide the real data.
-
-Available Functions:
-{chr(10).join(function_list)}
-
-Example Interactions:
-{chr(10).join(examples)}
-
-WRONG RESPONSES:
-Q: What's the weather in Tokyo?
-A: Let me check the weather...
-A: The weather is sunny...
-A: What's the weather like in Tokyo?
-
-CORRECT RESPONSES:
-Q: What's the weather in Tokyo?
-A: {{"function": "get_weather", "arguments": {{"location": "Tokyo"}}}}
-
-Q: How are you today?
-A: I'm doing well, thank you for asking! How can I help you?"""
-
-def build_conversation(messages: List[Message]) -> str:
-    """Convert message list to conversation format."""
-    parts = []
-    for msg in messages:
-        tag = "Human" if msg.role == "user" else "Assistant" if msg.role == "assistant" else "System"
-        parts.append(f"### {tag}: {msg.content}")
-    return "\n".join(parts)
-
-def is_valid_function_call(text: str) -> bool:
-    """Check if the text is a valid function call JSON."""
-    if not text.startswith("{"):
-        return False
-    try:
-        data = json.loads(text)
-        # Must have exactly function and arguments keys
-        if set(data.keys()) != {"function", "arguments"}:
-            return False
-        # Function must exist
-        if data["function"] not in FUNCTIONS:
-            return False
-        # Arguments must be a dict
-        if not isinstance(data["arguments"], dict):
-            return False
-        return True
-    except json.JSONDecodeError:
-        return False
-
-def execute_function_call(text: str) -> str:
-    """Execute a validated function call and return its result."""
-    data = json.loads(text)
-    fn_name = data["function"]
-    fn_info = FUNCTIONS[fn_name]
-    
-    # Execute the function with provided arguments
-    return fn_info["fn"](**data["arguments"])
-
-# ── 4. API Endpoints ──────────────────────────────────────────────────────
+# Chat Completion Endpoint
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completion(req: ChatCompletionRequest):
     """Regular chat completion endpoint - returns complete response."""
@@ -207,6 +69,8 @@ async def chat_completion(req: ChatCompletionRequest):
         )]
     )
 
+
+# Streaming Chat Completion Endpoint
 @app.post("/v1/chat/completions/stream")
 async def stream_chat_completion(req: ChatCompletionRequest):
     """Streaming chat completion endpoint - returns chunks of the response."""
@@ -300,3 +164,12 @@ async def stream_chat_completion(req: ChatCompletionRequest):
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# Embedding Endpoint
+@app.post("/v1/embeddings")
+async def embeddings(req: EmbeddingsRequest):
+    embeddings = embed(req.texts)
+
+    return EmbeddingsResponse(embeddings=embeddings, model = EMBED_MODEL_NAME)
+
