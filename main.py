@@ -23,7 +23,7 @@ def get_current_time() -> str:
 
 
 def get_weather(location: str) -> str:
-    return f"Weather in {location}: -25 °C, partly cloudy and extremely cold."
+    return f"Weather in {location}: 25 °C, partly cloudy and extremely cold."
 
 FUNCTIONS = {
     "get_current_time": {"fn": get_current_time, "params": {}},
