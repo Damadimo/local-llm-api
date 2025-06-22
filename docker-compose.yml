@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # Qdrant vector database
+  qdrant:
+    image: qdrant/qdrant:v1.8.1
+    container_name: llm-api-qdrant
+    ports:
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC API
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - llm-network
+
+  # LLM API Server
+  llm-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llm-api-server
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount models directory for model files
+      - ./data/models:/app/data/models
+      # Mount knowledge directory for documents
+      - ./data/knowledge:/app/data/knowledge
+      # Optional: mount a specific model file
+      # - /path/to/your/model.gguf:/app/data/models/model.gguf
+    environment:
+      # Configure to use Qdrant service
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_USE_MEMORY=false
+      # Server settings
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      # Model settings (can be overridden)
+      - MODEL_REPO_ID=TheBloke/Llama-2-7B-Chat-GGUF
+      - MODEL_FILENAME=llama-2-7b-chat.Q4_K_M.gguf
+      # Optional: Use a specific model path
+      # - MODEL_PATH=/app/data/models/your-model.gguf
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
+    networks:
+      - llm-network
+
+volumes:
+  qdrant_data:
+    driver: local
+
+networks:
+  llm-network:
+    driver: bridge 

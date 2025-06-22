@@ -1,7 +1,15 @@
-from typing import List
+"""
+Conversation handling utilities.
+"""
 import json
-from models import *
-from functions import *
+import logging
+from typing import List
+
+from llm_api.api.models.chat import Message
+from llm_api.core.functions.registry import function_registry
+
+logger = logging.getLogger(__name__)
+
 
 def build_system_message() -> str:
     """Create clear instructions for function calling behavior."""
@@ -10,16 +18,21 @@ def build_system_message() -> str:
     # Build examples for each function
     examples = []
     
-    for name, info in FUNCTIONS.items():
+    function_specs = function_registry.get_function_specs()
+    
+    for spec in function_specs:
+        name = spec["name"]
+        params = spec["parameters"]
+        
         # Function list entry
-        params = ", ".join(f"{param}" for param in info["params"].keys())
-        params = f"({params})" if params else "(no parameters)"
-        function_list.append(f"- {name}{params}")
+        param_names = ", ".join(params.get("properties", {}).keys())
+        param_str = f"({param_names})" if param_names else "(no parameters)"
+        function_list.append(f"- {name}{param_str}")
         
         # Example entry
         example_args = {}
-        for param in info["params"].keys():
-            example_args[param] = "London" if "location" in param else "default"
+        for param_name in params.get("properties", {}).keys():
+            example_args[param_name] = "London" if "location" in param_name else "default"
         
         examples.append(f"Q: What is the {name.replace('get_', '')} in {next(iter(example_args.values())) if example_args else 'now'}?\nA: " + 
                       json.dumps({"function": name, "arguments": example_args}))
@@ -59,6 +72,7 @@ A: {{"function": "get_weather", "arguments": {{"location": "Tokyo"}}}}
 Q: How are you today?
 A: I'm doing well, thank you for asking! How can I help you?"""
 
+
 def build_conversation(messages: List[Message]) -> str:
     """Convert message list to conversation format."""
     parts = []
@@ -66,6 +80,7 @@ def build_conversation(messages: List[Message]) -> str:
         tag = "Human" if msg.role == "user" else "Assistant" if msg.role == "assistant" else "System"
         parts.append(f"### {tag}: {msg.content}")
     return "\n".join(parts)
+
 
 def is_valid_function_call(text: str) -> bool:
     """Check if the text is a valid function call JSON."""
@@ -77,7 +92,7 @@ def is_valid_function_call(text: str) -> bool:
         if set(data.keys()) != {"function", "arguments"}:
             return False
         # Function must exist
-        if data["function"] not in FUNCTIONS:
+        if data["function"] not in function_registry.list_functions():
             return False
         # Arguments must be a dict
         if not isinstance(data["arguments"], dict):
@@ -86,13 +101,20 @@ def is_valid_function_call(text: str) -> bool:
     except json.JSONDecodeError:
         return False
 
+
 def execute_function_call(text: str) -> str:
     """Execute a validated function call and return its result."""
-    data = json.loads(text)
-    fn_name = data["function"]
-    fn_info = FUNCTIONS[fn_name]
-    
-    # Execute the function with provided arguments
-    return fn_info["fn"](**data["arguments"])
-
-
+    try:
+        data = json.loads(text)
+        fn_name = data["function"]
+        arguments = data["arguments"]
+        
+        # Execute the function using the registry
+        result = function_registry.call_function(fn_name, arguments)
+        logger.info(f"Function call executed: {fn_name}({arguments}) -> {result}")
+        return result
+        
+    except Exception as e:
+        error_msg = f"Error executing function call: {str(e)}"
+        logger.error(error_msg)
+        return error_msg 
